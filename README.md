@@ -178,7 +178,7 @@ The tables below showcase the exact data locations, formats, and encryption mode
 ## Credits
 
 * **Manual CSRSS process registration implementation from [NtCreateUserProcess-Post](https://github.com/je5442804/NtCreateUserProcess-Post)**
-* **Chromme IElevator COM interface research from [snovvcrash's gist](https://gist.github.com/snovvcrash/caded55a318bbefcb6cc9ee30e82f824)**
+* **Chrome IElevator COM interface research from [snovvcrash's gist](https://gist.github.com/snovvcrash/caded55a318bbefcb6cc9ee30e82f824)**
 * **Edge & Brave IElevator COM interface research from [Chrome-App-Bound-Encryption-Decryption](https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption)**
 * **[luci4](https://github.com/l00sy4) for technical guidance**
 * **SQLite amalgamation from [sqlite.org](https://www.sqlite.org/amalgamation.html) In <= v1.1.1**
